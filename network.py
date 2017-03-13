@@ -634,8 +634,6 @@ class SnowflakeRestful(object):
         request_timeout = timeouts[2]  # total request timeout
         request_exec_timeout = 60  # one request thread timeout
         conn = self._connection
-        proxies = set_proxies(conn.rest._proxy_host, conn.rest._proxy_port,
-                              conn.rest._proxy_user, conn.rest._proxy_password)
 
         def request_exec(result_queue):
             try:

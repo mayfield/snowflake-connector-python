@@ -525,9 +525,11 @@ class SnowflakeCursor(object):
                 is not None:
             self._total_rowcount = data['total']
 
+        self._chunk_rowtype = data[u'rowtype']
+        self._chunk_version = data.get(u'version', 0)
+
         self._description = []
         self._column_idx_to_name = {}
-        self._column_converter = []
         for idx, column in enumerate(data[u'rowtype']):
             self._column_idx_to_name[idx] = column[u'name']
             type_value = FIELD_NAME_TO_ID[column[u'type'].upper()]
@@ -538,9 +540,6 @@ class SnowflakeCursor(object):
                                       column[u'precision'],
                                       column[u'scale'],
                                       column[u'nullable']))
-            self._column_converter.append(
-                self._connection.converter.to_python_method(
-                    column[u'type'].upper(), column, data.get(u'version', 0)))
 
         self._total_row_index = -1  # last fetched number of rows
 
@@ -569,11 +568,13 @@ class SnowflakeCursor(object):
                         header_value)
 
             self.logger.debug(u'qrmk=%s', qrmk)
+            mp_mode = getattr(self._connection, '_mp_mode', False)
+            workers = getattr(self._connection, '_workers', None)
             self._chunk_downloader = self._connection._chunk_downloader_class(
                 chunks, self._connection, self, qrmk, chunk_headers,
                 prefetch_slots=self._client_result_prefetch_slots,
                 prefetch_threads=self._client_result_prefetch_threads,
-                use_ijson=use_ijson)
+                use_ijson=use_ijson, mp_mode=mp_mode, workers=workers)
 
         if is_dml:
             updated_rows = 0
@@ -852,8 +853,11 @@ class SnowflakeCursor(object):
         removing generator improved performance even better.
         """
         idx = 0
+        conn_conv = self._connection.converter
+        converters = conn_conv.make_converters(self._chunk_rowtype,
+                                               self._chunk_version)
         for col in row:
-            conv = self._column_converter[idx]
+            conv = converters[idx]
             try:
                 row[idx] = col if conv is None or col is None else conv(col)
             except Exception as e:

@@ -5,7 +5,7 @@
 #
 import decimal
 import time
-from datetime import datetime, timedelta, tzinfo, date
+from datetime import datetime, timedelta, tzinfo
 from logging import getLogger
 
 import pytz
@@ -32,20 +32,21 @@ MASK_OF_TIMEZONE = int((1 << BITS_FOR_TIMEZONE) - 1)
 ZERO_TIMEDELTA = timedelta(seconds=0)
 ZERO_EPOCH = datetime.utcfromtimestamp(0)
 
-# Tzinfo class cache
-_TZINFO_CLASS_CACHE = {}
+# Tzinfo cache
+_TZINFO_CACHE = {}
+
+logger = getLogger(__name__)
 
 
 class SnowflakeConverter(object):
+
     def __init__(self, **kwargs):
         self._parameters = {}
         self._use_sfbinaryformat = kwargs.get('use_sfbinaryformat', False)
         self._use_numpy = kwargs.get('use_numpy', False) and numpy is not None
 
-        self.logger = getLogger(__name__)
-        self.logger.debug('use_sfbinaryformat: %s, use_numpy: %s',
-                          self._use_sfbinaryformat,
-                          self._use_numpy)
+        logger.debug('use_sfbinaryformat: %s, use_numpy: %s',
+                     self._use_sfbinaryformat, self._use_numpy)
 
     def set_parameters(self, parameters):
         self._parameters = {}
@@ -61,34 +62,27 @@ class SnowflakeConverter(object):
     def get_parameter(self, param):
         return self._parameters[param] if param in self._parameters else None
 
+    def make_converters(self, chunk_rowtype, chunk_version):
+        """
+        Produce a list of conversion functions for a given chunk/version.
+
+        The rowtype and verion values are the snowflake API represenation
+        of table columns.
+        """
+        return [self.to_python_method(col[u'type'].upper(), col, chunk_version)
+                for col in chunk_rowtype]
+
     def _generate_tzinfo_from_tzoffset(self, tzoffset_minutes):
         """
         Generates tzinfo object from tzoffset.
         """
         try:
-            return _TZINFO_CLASS_CACHE[tzoffset_minutes]
+            return _TZINFO_CACHE[tzoffset_minutes]
         except KeyError:
             pass
-        sign = u'P' if tzoffset_minutes >= 0 else u'N'
-        abs_tzoffset_minutes = abs(tzoffset_minutes)
-        hour, minute = divmod(abs_tzoffset_minutes, 60)
-        name = u'GMT{sign:s}{hour:02d}{minute:02d}'.format(
-            sign=sign,
-            hour=hour,
-            minute=minute)
-        tzinfo_class_type = type(
-            str(name),  # str() for both Python 2 and 3
-            (tzinfo,),
-            dict(
-                utcoffset=lambda self0, dt, is_dst=False: timedelta(
-                    minutes=tzoffset_minutes),
-                tzname=lambda self0, dt: name,
-                dst=lambda self0, dt: ZERO_TIMEDELTA
-            )
-        )
-        tzinfo_cls = tzinfo_class_type()
-        _TZINFO_CLASS_CACHE[tzoffset_minutes] = tzinfo_cls
-        return tzinfo_cls
+        _TZINFO_CACHE[tzoffset_minutes] = tz = SnowflakeTZ()
+        tz.setoffset(tzoffset_minutes)
+        return tz
 
     #
     # FROM Snowflake to Python Objects
@@ -105,7 +99,7 @@ class SnowflakeConverter(object):
                 return getattr(self, conv)(ctx)
             except AttributeError:
                 pass
-        self.logger.warn("No column converter found for type: %s", type_name)
+        logger.warn("No column converter found for type: %s", type_name)
         return None  # Skip conversion
 
     def _FIXED_to_python(self, ctx):
@@ -255,7 +249,7 @@ class SnowflakeConverter(object):
         try:
             return pytz.timezone(self.get_parameter(u'TIMEZONE'))
         except pytz.exceptions.UnknownTimeZoneError:
-            self.logger.warn('converting to tzinfo failed')
+            logger.warn('converting to tzinfo failed')
             if tzlocal is not None:
                 return tzlocal.get_localzone()
             else:
@@ -277,7 +271,7 @@ class SnowflakeConverter(object):
         try:
             tzinfo_value = pytz.timezone(self.get_parameter(u'TIMEZONE'))
         except pytz.exceptions.UnknownTimeZoneError:
-            self.logger.warn('converting to tzinfo_value failed')
+            logger.warn('converting to tzinfo_value failed')
             if tzlocal is not None:
                 tzinfo_value = tzlocal.get_localzone()
             else:
@@ -288,7 +282,7 @@ class SnowflakeConverter(object):
             t = pytz.utc.localize(t0, is_dst=False).astimezone(tzinfo_value)
             return t, fraction_of_nanoseconds
         except OverflowError:
-            self.logger.debug(
+            logger.debug(
                 "OverflowError in converting from epoch time to "
                 "timestamp_ltz: %s(ms). Falling back to use struct_time."
             )
@@ -580,3 +574,30 @@ class SnowflakeConverter(object):
             return u"X'{0}'".format(value.decode('ascii'))
 
         return u"'{0}'".format(value)
+
+
+class SnowflakeTZ(tzinfo):
+    """ Handle arbitrary timezones. """
+
+    def setoffset(self, tzoffset_minutes):
+        sign = u'P' if tzoffset_minutes >= 0 else u'N'
+        abs_tzoffset_minutes = abs(tzoffset_minutes)
+        hour, minute = divmod(abs_tzoffset_minutes, 60)
+        self._tzoffset_minutes = tzoffset_minutes
+        self._name = u'GMT{sign:s}{hour:02d}{minute:02d}'.format(
+            sign=sign,
+            hour=hour,
+            minute=minute)
+        #super(SnowflakeTZ, self).__init__()
+
+    #def __str__(self):
+    #    return self._name
+
+    def utcoffset(self, dt, is_dst=False):
+        return timedelta(minutes=self._tzoffset_minutes)
+
+    def tzname(self, dt):
+        return self._name
+
+    def dst(self, dt):
+        return ZERO_TIMEDELTA
