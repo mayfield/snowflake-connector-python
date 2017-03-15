@@ -18,21 +18,23 @@ def test_binding_security(conn_cnx):
         cnx.cursor().execute("alter session set timezone='UTC'")
         with cnx.cursor() as cur:
             cur.execute(
-                "show databases like 'TESTDB'")
+                "show databases like 'TESTDB_JM'")
             rec = cur.fetchone()
             assert rec[0] != expected_qa_mode_datetime
 
         with cnx.cursor() as cur:
             cur.execute(
-                "show databases like 'TESTDB'",
+                "show databases like 'TESTDB_JM'",
                 _statement_params={
                     'QA_MODE': True,
                 })
             rec = cur.fetchone()
+            import pdb
+            pdb.set_trace()
             assert rec[0] == expected_qa_mode_datetime
 
         with cnx.cursor() as cur:
             cur.execute(
-                "show databases like 'TESTDB'")
+                "show databases like 'TESTDB_JM'")
             rec = cur.fetchone()
             assert rec[0] != expected_qa_mode_datetime

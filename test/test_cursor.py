@@ -52,6 +52,7 @@ def conn(request, conn_cnx, db_parameters):
     request.addfinalizer(fin)
 
     with conn_cnx() as cnx:
+        cnx.cursor().execute("alter session set TIMESTAMP_TYPE_MAPPING=TIMESTAMP_LTZ;")
         cnx.cursor().execute("""
 create table {name} (
 aa int,
@@ -139,7 +140,6 @@ def test_insert_and_select_by_separate_connection(
         database=db_parameters['database'],
         schema=db_parameters['schema'],
         timezone='UTC',
-        protocol='http',
     )
     _create_warehouse(cnx2, db_parameters)
     try:
@@ -187,7 +187,7 @@ def test_insert_timestamp_select(conn, db_parameters):
     other_timestamp = current_timestamp.replace(tzinfo=pytz.timezone(JST_TZ))
 
     with conn() as cnx:
-        cnx.cursor().execute("alter session set TIMEZONE=%s", (PST_TZ,))
+        cnx.cursor().execute("alter session set TIMEZONE=%s;", (PST_TZ,))
         c = cnx.cursor()
         try:
             fmt = ("insert into {name}(aa, ts, tstz, tsntz, dt, tm) "
@@ -218,7 +218,6 @@ def test_insert_timestamp_select(conn, db_parameters):
         database=db_parameters['database'],
         schema=db_parameters['schema'],
         timezone='UTC',
-        protocol='http'
     )
     _create_warehouse(cnx2, db_parameters)
     try:
@@ -244,9 +243,15 @@ def test_insert_timestamp_select(conn, db_parameters):
         assert result_numeric_value[0] == 1234, \
             'the integer result was wrong'
 
-        td_diff = _total_milliseconds_from_timedelta(
-            current_timestamp - result_timestamp_value[0])
-        assert td_diff == 0, 'the timestamp result was wrong'
+        try:
+            td_diff = _total_milliseconds_from_timedelta(
+                current_timestamp - result_timestamp_value[0])
+            assert td_diff == 0, 'the timestamp result was wrong'
+        except Exception as e:
+            print('eee', e)
+            import pdb
+            pdb.set_trace()
+            raise
 
         td_diff = _total_milliseconds_from_timedelta(
             other_timestamp - result_other_timestamp_value[0])
@@ -408,7 +413,6 @@ def test_insert_binary_select(conn, db_parameters):
         account=db_parameters['account'],
         database=db_parameters['database'],
         schema=db_parameters['schema'],
-        protocol='http'
     )
     _create_warehouse(cnx2, db_parameters)
     try:
@@ -453,7 +457,6 @@ def test_insert_binary_select_with_bytearray(conn, db_parameters):
         account=db_parameters['account'],
         database=db_parameters['database'],
         schema=db_parameters['schema'],
-        protocol='http'
     )
     _create_warehouse(cnx2, db_parameters)
     try:
@@ -479,6 +482,7 @@ def test_variant(conn, db_parameters):
 
     name_variant = db_parameters['name'] + "_variant"
     with conn() as cnx:
+        cnx.cursor().execute("alter session set TIMESTAMP_TYPE_MAPPING=TIMESTAMP_LTZ;")
         cnx.cursor().execute("""
 create table {name} (
 created_at timestamp, data variant)
