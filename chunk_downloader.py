@@ -108,11 +108,14 @@ class DownloaderStats(object):
         walltime = last_finish - first_start
         return sum(x['data'] for x in records) / walltime
 
-    def concurrency(self, period):
+    def concurrency(self, period=None, count=None):
         u"""
         Return the achieved concurrency average for last `period` seconds.
         """
-        records = self[-period:]
+        if period is not None:
+            records = self[-period:]
+        else:
+            records = self._records[-count:]
         if not records:
             return 0
         first_start = min(x['started'] for x in records)
@@ -300,18 +303,27 @@ class SnowflakeChunkDownloader(object):
                 return
             avgrate = self.stats.rolling(period=60) * 8 / 1024 / 1024
             avgrate2 = self.stats.rolling(count=_max_pending) * 8 / 1024 / 1024
-            logger.warn('%f %f', avgrate, avgrate2)
-            avgconcur = self.stats.concurrency(5)
+            logger.warn('AVGRATE: 60s=%f 40c=%f', avgrate, avgrate2)
+            avgconcur = self.stats.concurrency(period=60)
+            avgconcur2 = self.stats.concurrency(count=_max_pending)
+            avgrate = avgrate2
+            logger.warn('AVGCONCUR: 60s=%f 40c=%f', avgconcur, avgconcur2)
+            avgconcur = avgconcur2
             sample = avgrate, avgconcur
             if not self._stats_hist or self._stats_hist[-1] != sample:
                 self._stats_hist.append(sample)
-            bestrate = max(self._stats_hist)[0]
-            okrate = 0.8 * bestrate
-            leanest_ok = min(c for rate, c in self._stats_hist
-                             if rate >= okrate)
+            best_rate = max(self._stats_hist)[0]
+            accept_rate = 0.8 * best_rate
+            accept_concur_min = min(c for rate, c in self._stats_hist
+                                    if rate >= accept_rate)
             requests = sum(1 for x in threading.enumerate() if 'ChunkDownloader' in str(x))
-            logger.critical("size: %d, activedl: %d, rate: %f mbps, concur: %f, leanest_ok: %f, bestrate: %f", len(self._stats_hist), requests, avgrate, avgconcur, leanest_ok, bestrate)
-            concur_limit = leanest_ok + self._sched_ready
+            logger.critical("size: %d, activedl: %d, rate: %f mbps, concur: %f, accept_concur_min: %f, best_rate: %f", len(self._stats_hist), requests, avgrate, avgconcur, accept_concur_min, best_rate)
+            concur_limit = accept_concur_min + self._sched_ready
+            # Trend towards pending limit if it exceeds the concurrency
+            # setting.  This is because the cursor is indicating it's starving
+            # for data and we may need to find higher upper limits.  The intent
+            # is to bounce off the rev limiter until it finds the local
+            # maximum.
             if self._sched_pending_limit > concur_limit:
                 concur_limit *= 1 + random.random() + 2 * \
                     math.log1p(concur_limit / self._sched_pending_limit)
