@@ -663,13 +663,19 @@ class SnowflakeCursor(object):
         try:
             import collections # XXX
             from .chunk_downloader import timer
-            waits = collections.deque(maxlen=40)
+            waits_10 = collections.deque(maxlen=10)
+            waits_100 = collections.deque(maxlen=100)
+            waits_1000 = collections.deque(maxlen=1000)
             start = timer()
             for chunk in downloader:
                 wait = timer() - start
-                waits.append(wait)
-                avgwait = sum(waits) / len(waits)
-                self.logger.info("<b>                                                     WAIT AVG: %f ms", avgwait * 1000)
+                waits_10.append(wait)
+                waits_100.append(wait)
+                waits_1000.append(wait)
+                self.logger.info("<b>                                                     WAIT AVG: %d, %d, %d ms",
+                        sum(waits_10) / len(waits_10) * 1000,
+                        sum(waits_100) / len(waits_100) * 1000,
+                        sum(waits_1000) / len(waits_1000) * 1000)
                 for row in chunk:
                     yield row
                 start = timer()
