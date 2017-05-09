@@ -661,9 +661,21 @@ class SnowflakeCursor(object):
         """
         downloader.sched_next()  # prefetch first page
         try:
+            import collections # XXX
+            from .chunk_downloader import timer
+            waits = collections.deque(maxlen=40)
+            start = timer()
             for chunk in downloader:
+                wait = timer() - start
+                waits.append(wait)
+                avgwait = sum(waits) / len(waits)
+                if wait > 0.400:
+                    self.logger.critical("\n\n <b>LONG WAIT! %f %f\n", wait, avgwait)
+                else:
+                    self.logger.info("<b>                                                                                   WAIT AVG: %f", avgwait)
                 for row in chunk:
                     yield row
+                start = timer()
         finally:
             downloader.terminate()
 
