@@ -26,9 +26,8 @@ SCHED_ACTIVE_LIMIT = 40  # Adjust down to reduce max memory usage.
 SCHED_READY_PCT_LIMIT = 0.8  # Maximum ready/total-pending ratio.
 SCHED_RATE_WINDOW_FACTOR = 4  # Adjusts window size for rate est.
 SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
-SCHED_GROWTH_MIN = 3  # Minimum jump for concurrency growth.
+SCHED_GROWTH_MIN = 2  # Minimum jump for concurrency growth.
 SCHED_THRESHOLD_PCT = 0.80
-
 
 SSE_C_ALGORITHM = u"x-amz-server-side-encryption-customer-algorithm"
 SSE_C_KEY = u"x-amz-server-side-encryption-customer-key"
