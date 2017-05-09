@@ -22,12 +22,14 @@ MAX_RETRY_DOWNLOAD = 3
 WAIT_TIME_IN_SECONDS = 1200
 
 # Scheduling ramp constants.  Use caution if changing these.
-SCHED_ACTIVE_LIMIT = 40  # Adjust down to reduce max memory usage.
+SCHED_ACTIVE_LIMIT = 20  # Adjust down to reduce max memory usage.
 SCHED_READY_PCT_LIMIT = 0.8  # Maximum ready/total-pending ratio.
-SCHED_RATE_WINDOW_FACTOR = 10  # Adjusts window size for rate est.
-SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
-SCHED_GROWTH_MIN = 2  # Minimum jump for concurrency growth.
-SCHED_THRESHOLD_PCT = 0.80
+SCHED_RATE_WINDOW_FACTOR = 8  # Adjusts window size for rate est.
+SCHED_GROWTH_FACTOR = 0.6  # Adjusts how fast concurrency scales.
+SCHED_GROWTH_MIN = 1  # Minimum jump for concurrency growth.
+SCHED_RATE_FLOOR_PCT = 0.80
+SCHED_CONCUR_CEIL_PCT = 0.70
+SCHED_ACTIVE_IDEAL_INITIAL = 2
 
 SSE_C_ALGORITHM = u"x-amz-server-side-encryption-customer-algorithm"
 SSE_C_KEY = u"x-amz-server-side-encryption-customer-key"
@@ -138,7 +140,8 @@ class SnowflakeChunkDownloader(object):
     _sched_rate_window_factor = SCHED_RATE_WINDOW_FACTOR
     _sched_growth_factor = SCHED_GROWTH_FACTOR
     _sched_growth_min = SCHED_GROWTH_MIN
-    _sched_threshold_pct = SCHED_THRESHOLD_PCT
+    _sched_rate_floor_pct = SCHED_RATE_FLOOR_PCT
+    _sched_concur_ceil_pct = SCHED_CONCUR_CEIL_PCT
 
     def __init__(self, chunks, connection, cursor, qrmk, chunk_headers,
                  use_ijson=False):
@@ -155,7 +158,7 @@ class SnowflakeChunkDownloader(object):
         self._sched_work = {}
         self._sched_cursor = 0
         self._sched_active = 0
-        self._sched_active_ideal = 1
+        self._sched_active_ideal = SCHED_ACTIVE_IDEAL_INITIAL
         self._sched_ready = 0
         self._stats = DownloaderStats()
         self._stats_hist = []
@@ -308,7 +311,7 @@ class SnowflakeChunkDownloader(object):
                (not self._stats_hist or self._stats_hist[-1] != sample):
                 self._stats_hist.append(sample)
                 best_rate, best_concur = max(self._stats_hist)
-                good_rate = self._sched_threshold_pct * best_rate
+                good_rate = self._sched_rate_floor_pct * best_rate
                 good_concur = min(c for rate, c in self._stats_hist
                                   if rate >= good_rate)
                 peak_concur = max(x[1] for x in self._stats_hist)
@@ -316,7 +319,7 @@ class SnowflakeChunkDownloader(object):
                             "GOOD:<green>%10f (%4d)</green>  - CURRENT:<cyan>%10f (%4d)",
                             peak_concur, best_concur, best_rate // 2**17, good_concur,
                             good_rate // 2**17, concur, rate // 2**17)
-                if best_concur > (peak_concur * self._sched_threshold_pct):
+                if best_concur > (peak_concur * self._sched_concur_ceil_pct):
                     # We have not explored the upper limits enough.
                     ideal = peak_concur + max(peak_concur *
                                               self._sched_growth_factor,
