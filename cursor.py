@@ -672,7 +672,7 @@ class SnowflakeCursor(object):
                 if wait > 0.400:
                     self.logger.critical("\n\n <b>LONG WAIT! %f %f\n", wait, avgwait)
                 else:
-                    self.logger.info("<b>                                                                                   WAIT AVG: %f", avgwait)
+                    self.logger.info("<b>                                                     WAIT AVG: %f ms", avgwait * 1000)
                 for row in chunk:
                     yield row
                 start = timer()
