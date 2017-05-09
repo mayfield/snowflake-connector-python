@@ -5,6 +5,7 @@
 #
 
 import contextlib
+import json
 import math
 import random
 import threading
@@ -15,8 +16,7 @@ from logging import getLogger
 
 from .errorcode import ER_CHUNK_DOWNLOAD_FAILED
 from .errors import (Error, OperationalError)
-
-DEFAULT_REQUEST_TIMEOUT = 3600
+from .ssl_wrap_socket import set_proxies
 
 MAX_RETRY_DOWNLOAD = 3
 WAIT_TIME_IN_SECONDS = 1200
@@ -351,14 +351,17 @@ class SnowflakeChunkDownloader(object):
                 headers[SSE_C_ALGORITHM] = SSE_C_AES
                 headers[SSE_C_KEY] = self._qrmk
         timeouts = (
-            self._connection._connect_timeout,
-            self._connection._connect_timeout,
-            DEFAULT_REQUEST_TIMEOUT
+            15,  # how long to wait for initial connection
+            5  # how long to wait for initial request data
         )
-        return self._connection.rest.fetch(
-            u'get', chunk['url'], headers, timeouts=timeouts,
-            is_raw_binary=True, is_raw_binary_iterator=False,
-            use_ijson=self._use_ijson)
+        rest = self._connection.rest
+        proxies = set_proxies(rest._proxy_host, rest._proxy_port,
+                              rest._proxy_user, rest._proxy_password)
+        with rest._use_requests_session() as session:
+            resp = session.get(chunk['url'], proxies=proxies, headers=headers,
+                               timeout=timeouts, verify=True)
+        resp.raise_for_status()
+        return json.loads('[%s]' % resp.content.decode())
 
     def terminate(self):
         """
