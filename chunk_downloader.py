@@ -24,7 +24,7 @@ WAIT_TIME_IN_SECONDS = 1200
 # Scheduling ramp constants.  Use caution if changing these.
 SCHED_ACTIVE_LIMIT = 40  # Adjust down to reduce max memory usage.
 SCHED_READY_PCT_LIMIT = 0.8  # Maximum ready/total-pending ratio.
-SCHED_RATE_WINDOW_FACTOR = 4  # Adjusts window size for rate est.
+SCHED_RATE_WINDOW_FACTOR = 10  # Adjusts window size for rate est.
 SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
 SCHED_GROWTH_MIN = 2  # Minimum jump for concurrency growth.
 SCHED_THRESHOLD_PCT = 0.80
@@ -294,17 +294,18 @@ class SnowflakeChunkDownloader(object):
         with self._sched_lock:
             if self._sched_cursor >= self._total:
                 return
-            window = self._sched_active_ideal * self._sched_rate_window_factor
-            rates = self._stats[-int(math.ceil(window)):]
-            if not rates:
-                # Connection too slow or too immature for consideration.
-                # let the cursor chunk-fault on its own.
-                logger.warning(u'skipping chunk scheduling')
-                return
-            rate = rates.avg()
-            concur = rates.overlap()
-            sample = rate, concur
-            if not self._stats_hist or self._stats_hist[-1] != sample:
+            rate_window = int(math.ceil(self._sched_active_ideal *
+                                        self._sched_rate_window_factor))
+            if len(self._stats) >= rate_window:
+                rates = self._stats[-rate_window:]
+                rate = rates.avg()
+                concur = rates.overlap()
+                sample = rate, concur
+            else:
+                # Connection is too immature to get a sample from.
+                sample = None
+            if sample is not None and \
+               (not self._stats_hist or self._stats_hist[-1] != sample):
                 self._stats_hist.append(sample)
                 best_rate, best_concur = max(self._stats_hist)
                 good_rate = self._sched_threshold_pct * best_rate
