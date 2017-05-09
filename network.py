@@ -778,6 +778,12 @@ class SnowflakeRestful(object):
                     errno=ER_FAILED_TO_SERVER,
                     sqlstate=SQLSTATE_CONNECTION_WAS_NOT_ESTABLISHED
                 ), False))
+            except Exception as err:
+                logger.exception(u'unexpected condition')
+                result_queue.put((err, True))
+            except BaseException:
+                logger.exception(u'XXX ignore these')
+                raise
 
         if is_single_thread:
             # This is dedicated code for DELETE SESSION when Python exists.
