@@ -22,13 +22,13 @@ MAX_RETRY_DOWNLOAD = 3
 WAIT_TIME_IN_SECONDS = 1200
 
 # Scheduling ramp constants.  Use caution if changing these.
-SCHED_ACTIVE_LIMIT = 20  # Adjust down to reduce max memory usage.
+SCHED_ACTIVE_LIMIT = 24  # Adjust down to reduce max memory usage.
 SCHED_READY_PCT_LIMIT = 0.8  # Maximum ready/total-pending ratio.
 SCHED_RATE_WINDOW_FACTOR = 8  # Adjusts window size for rate est.
-SCHED_GROWTH_FACTOR = 0.6  # Adjusts how fast concurrency scales.
+SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
 SCHED_GROWTH_MIN = 1  # Minimum jump for concurrency growth.
 SCHED_RATE_FLOOR_PCT = 0.80
-SCHED_CONCUR_CEIL_PCT = 0.70
+SCHED_CONCUR_CEIL_PCT = 0.50
 SCHED_ACTIVE_IDEAL_INITIAL = 2
 
 SSE_C_ALGORITHM = u"x-amz-server-side-encryption-customer-algorithm"
