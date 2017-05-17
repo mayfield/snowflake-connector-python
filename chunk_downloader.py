@@ -28,7 +28,8 @@ SCHED_RATE_WINDOW_FACTOR = 8  # Adjusts window size for rate est.
 SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
 SCHED_GROWTH_MIN = 1  # Minimum jump for concurrency growth.
 SCHED_RATE_FLOOR_PCT = 0.80
-SCHED_CONCUR_CEIL_PCT = 0.50
+SCHED_CONCUR_CEIL_PCT = 0.70  # When concurrency at best bandwidth is less
+                              # than this percentage of the peak concurrency.
 SCHED_ACTIVE_IDEAL_INITIAL = 2
 
 SSE_C_ALGORITHM = u"x-amz-server-side-encryption-customer-algorithm"
