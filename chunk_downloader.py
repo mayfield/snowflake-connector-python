@@ -22,15 +22,14 @@ MAX_RETRY_DOWNLOAD = 3
 WAIT_TIME_IN_SECONDS = 1200
 
 # Scheduling ramp constants.  Use caution if changing these.
-SCHED_ACTIVE_LIMIT = 24  # Adjust down to reduce max memory usage.
-SCHED_READY_PCT_LIMIT = 0.8  # Maximum ready/total-pending ratio.
+SCHED_ACTIVE_CEIL = 24  # Adjust down to reduce max memory usage.
+SCHED_READY_PCT_CEIL = 0.8  # Maximum ready/total-pending ratio.
 SCHED_RATE_WINDOW_FACTOR = 8  # Adjusts window size for rate est.
 SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
 SCHED_GROWTH_MIN = 1  # Minimum jump for concurrency growth.
 SCHED_RATE_FLOOR_PCT = 0.80
-SCHED_CONCUR_CEIL_PCT = 0.70  # When concurrency at best bandwidth is less
-                              # than this percentage of the peak concurrency.
-SCHED_ACTIVE_IDEAL_INITIAL = 2
+SCHED_CONCUR_CEIL_PCT = 0.70
+SCHED_ACTIVE_FLOOR = 2  # Minimum amount of concurrency for downloads.
 
 SSE_C_ALGORITHM = u"x-amz-server-side-encryption-customer-algorithm"
 SSE_C_KEY = u"x-amz-server-side-encryption-customer-key"
@@ -136,8 +135,9 @@ class SnowflakeChunkDownloader(object):
     Large Result set chunk downloader class.
     """
 
-    _sched_active_limit = SCHED_ACTIVE_LIMIT
-    _sched_ready_pct_limit = SCHED_READY_PCT_LIMIT
+    _sched_active_ceil = SCHED_ACTIVE_CEIL
+    _sched_active_floor = SCHED_ACTIVE_FLOOR
+    _sched_ready_pct_ceil = SCHED_READY_PCT_CEIL
     _sched_rate_window_factor = SCHED_RATE_WINDOW_FACTOR
     _sched_growth_factor = SCHED_GROWTH_FACTOR
     _sched_growth_min = SCHED_GROWTH_MIN
@@ -159,7 +159,7 @@ class SnowflakeChunkDownloader(object):
         self._sched_work = {}
         self._sched_cursor = 0
         self._sched_active = 0
-        self._sched_active_ideal = SCHED_ACTIVE_IDEAL_INITIAL
+        self._sched_active_ideal = self._sched_active_floor
         self._sched_ready = 0
         self._stats = DownloaderStats()
         self._stats_hist = []
@@ -327,16 +327,18 @@ class SnowflakeChunkDownloader(object):
                                               self._sched_growth_min)
                     logger.info("<b><cyan>PUSH UP2! %f", ideal)
                 else:
-                    ideal = max(1, random.randint(int(round(good_concur)),
-                                                  int(round(best_concur))))
+                    ideal = random.randint(int(round(good_concur)),
+                                           int(round(best_concur)))
                     logger.info("<b><yellow>HOLD2 %f", ideal)
-                self._sched_active_ideal = min(self._sched_active_limit,
-                                               max(1, ideal))
-            if self._sched_ready <= max(1, self._sched_active_ideal * self._sched_ready_pct_limit):
+                self._sched_active_ideal = min(self._sched_active_ceil,
+                                               max(self._sched_active_floor,
+                                                   ideal))
+            if self._sched_ready <= max(1, self._sched_active_ideal *
+                                        self._sched_ready_pct_ceil):
                 add = int(round(self._sched_active_ideal)) - self._sched_active
                 for i in range(add):
                     logger.info(u'<bgyellow><black>scheduling <u>%d</u>: active: %d, ready: %d, '
-                                u'limit: %f', i, self._sched_active,
+                                u'ideal: %f', i, self._sched_active,
                                 self._sched_ready, self._sched_active_ideal)
                     self.sched_next()
 
