@@ -17,18 +17,19 @@ from .errorcode import ER_CHUNK_DOWNLOAD_FAILED
 from .errors import (Error, OperationalError)
 from .ssl_wrap_socket import set_proxies
 
-MAX_RETRY_DOWNLOAD = 3
-WAIT_TIME_IN_SECONDS = 1200
+MAX_RETRY_DOWNLOAD = 5
+WAIT_TIME_IN_SECONDS = 120
 
 # Scheduling ramp constants.  Use caution if changing these.
 SCHED_ACTIVE_CEIL = 24  # Adjust down to reduce max memory usage.
 SCHED_READY_PCT_CEIL = 0.8  # Maximum ready/total-pending ratio.
-SCHED_RATE_WINDOW = slice(-10, None)  # Adjusts window size for rate est.
-SCHED_GROWTH_FACTOR = 0.5  # Adjusts how fast concurrency scales.
+SCHED_RATE_WINDOW = slice(-2, None)  # Adjusts window size for rate est.
+SCHED_GROWTH_FACTOR = 0.4  # Adjusts how fast concurrency scales.
 SCHED_GROWTH_MIN = 1  # Minimum jump for concurrency growth.
 SCHED_RATE_FLOOR_PCT = 0.80
 SCHED_CONCUR_CEIL_PCT = 0.70
 SCHED_ACTIVE_FLOOR = 2  # Minimum amount of concurrency for downloads.
+SCHED_MIN_CHUNKS = 10  # Number of initial chunks before scheduler kicks in.
 
 SSE_C_ALGORITHM = u"x-amz-server-side-encryption-customer-algorithm"
 SSE_C_KEY = u"x-amz-server-side-encryption-customer-key"
@@ -175,6 +176,7 @@ class SnowflakeChunkDownloader(object):
     _sched_growth_min = SCHED_GROWTH_MIN
     _sched_rate_floor_pct = SCHED_RATE_FLOOR_PCT
     _sched_concur_ceil_pct = SCHED_CONCUR_CEIL_PCT
+    _sched_min_chunks = SCHED_MIN_CHUNKS
 
     def __init__(self, chunks, connection, cursor, qrmk, chunk_headers,
                  use_ijson=False):
@@ -215,16 +217,17 @@ class SnowflakeChunkDownloader(object):
                 self._sched(idx, retry=attempt)
             with self._sched_lock:
                 fut = self._sched_work.pop(idx)
-            # Wait for the result with a small inner timeout that is used
-            # to maintain the scheduler (maybe_sched_more).  Otherwise it
-            # might become starved for some network conditions.
             start_ts = timer()
             while True:
                 try:
                     rows = fut.result(timeout=0.500)
                 except futures.TimeoutError:
                     elapsed = timer() - start_ts
-                    if elapsed > WAIT_TIME_IN_SECONDS:
+                    if elapsed < WAIT_TIME_IN_SECONDS:
+                        # Not an error, just time to feed `sched_tick` if it
+                        # wants to enqueue more download jobs.
+                        self._sched_tick()
+                    else:
                         logger.warning(
                             u'chunk %d download timed out after %g second(s)',
                             idx + 1, elapsed)
@@ -232,8 +235,6 @@ class SnowflakeChunkDownloader(object):
                             fut.cancel()
                             self._sched_active -= 1
                             break
-                    else:
-                        self._sched_tick()
                 else:
                     self._consumed += 1
                     with self._sched_lock:
@@ -309,7 +310,7 @@ class SnowflakeChunkDownloader(object):
         with self._sched_lock:
             if future.cancelled():
                 if exc is None:
-                    logger.warning("Ignoring good result from cancelled work")
+                    logger.warning(u"ignoring good result from cancelled work")
                 return
             self._sched_active -= 1
             self._sched_ready += 1
@@ -329,39 +330,13 @@ class SnowflakeChunkDownloader(object):
         with self._sched_lock:
             if self._sched_cursor >= self._total:
                 return
-            rates = self._stats[self._sched_rate_window]
-            rate = rates.rate()
-            concur = rates.concurrency()
-            if not rate:
-                # Connection is too immature to get a sample from.
-                sample = None
-            else:
-                sample = rate, concur
-            if sample is not None and \
-               (not self._stats_hist or self._stats_hist[-1] != sample):
-                self._stats_hist.append(sample)
-                best_rate, best_concur = max(self._stats_hist)
-                good_rate = self._sched_rate_floor_pct * best_rate
-                good_concur = min(c for rate, c in self._stats_hist
-                                  if rate >= good_rate)
-                peak_concur = max(x[1] for x in self._stats_hist)
-                logger.info("<i>C    PEAK:<red>%10f</red>  - BEST:<blue>%10f (%4d)</blue>   - "
-                            "GOOD:<green>%10f (%4d)</green>  - CURRENT:<cyan>%10f (%4d)",
-                            peak_concur, best_concur, best_rate // 2**17, good_concur,
-                            good_rate // 2**17, concur, rate // 2**17)
-                if best_concur > (peak_concur * self._sched_concur_ceil_pct):
-                    # We have not explored the upper limits enough.
-                    ideal = peak_concur + max(peak_concur *
-                                              self._sched_growth_factor,
-                                              self._sched_growth_min)
-                    logger.info("<b><cyan>PUSH UP2! %f", ideal)
-                else:
-                    ideal = random.randint(int(round(good_concur)),
-                                           int(round(best_concur)))
-                    logger.info("<b><yellow>HOLD2 %f", ideal)
-                self._sched_active_ideal = min(self._sched_active_ceil,
-                                               max(self._sched_active_floor,
-                                                   ideal))
+            if self._sched_cursor > self._sched_min_chunks:
+                rates = self._stats[self._sched_rate_window]
+                rate = rates.rate()
+                if rate is not None:
+                    reco = self._sched_recommend(rate, rates.concurrency())
+                    if reco is not None:
+                        self._sched_set_active_ideal(reco)
             if self._sched_ready <= max(1, self._sched_active_ideal *
                                         self._sched_ready_pct_ceil):
                 add = int(round(self._sched_active_ideal)) - self._sched_active
@@ -370,6 +345,43 @@ class SnowflakeChunkDownloader(object):
                                 u'ideal: %f', i, self._sched_active,
                                 self._sched_ready, self._sched_active_ideal)
                     self.sched_next()
+
+    def _sched_set_active_ideal(self, recomendation):
+        u"""
+        Bounded update of the idealized active download count.
+        """
+        self._sched_active_ideal = min(self._sched_active_ceil,
+                                       max(self._sched_active_floor,
+                                           recomendation))
+
+    def _sched_recommend(self, rate, concur):
+        u"""
+        Evaluate performance heuristics and make a recommendation about how
+        much concurrency to use.
+        """
+        if self._stats_hist and self._stats_hist[-1] == (rate, concur):
+            logger.warning("Nothing new to report!1!!!!! maybve nowt?")
+            return
+        self._stats_hist.append((rate, concur))
+        best_rate, best_concur = max(self._stats_hist)
+        good_rate = self._sched_rate_floor_pct * best_rate
+        good_concur = min(c for rate, c in self._stats_hist
+                          if rate >= good_rate)
+        peak_concur = max(x[1] for x in self._stats_hist)
+        logger.info("<i>C    PEAK:<red>%10f</red>  - BEST:<blue>%10f (%4d)</blue>   - "
+                    "GOOD:<green>%10f (%4d)</green>  - CURRENT:<cyan>%10f (%4d)",
+                    peak_concur, best_concur, best_rate // 2**17, good_concur,
+                    good_rate // 2**17, concur, rate // 2**17)
+        if best_concur > (peak_concur * self._sched_concur_ceil_pct):
+            # We have not explored the upper limits enough.
+            reco = peak_concur + max(peak_concur * self._sched_growth_factor,
+                                     self._sched_growth_min)
+            logger.info("<b><cyan>PUSH UP2! %f", reco)
+        else:
+            reco = random.randint(int(round(good_concur)),
+                                  int(round(best_concur)))
+            logger.info("<b><yellow>HOLD2 %f", reco)
+        return reco
 
     def _fetch_chunk_worker(self, chunk):
         u"""
@@ -382,14 +394,10 @@ class SnowflakeChunkDownloader(object):
             if self._qrmk is not None:
                 headers[SSE_C_ALGORITHM] = SSE_C_AES
                 headers[SSE_C_KEY] = self._qrmk
-        # XXX use global defines 
-        timeouts = (
-            15,  # how long to wait for initial connection
-            5  # max content stream idle time.
-        )
         rest = self._connection.rest
         proxies = set_proxies(rest._proxy_host, rest._proxy_port,
                               rest._proxy_user, rest._proxy_password)
+        timeouts = rest._connect_timeout, rest._request_timeout
         buf = ['[']
         with rest._use_requests_session() as session:
             resp = session.get(chunk['url'], proxies=proxies, headers=headers,
